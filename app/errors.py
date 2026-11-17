@@ -16,3 +16,12 @@ class RebuildFailure(Exception):
         self.device_id = device_id
         self.reason = reason
         super().__init__(f"rebuild failed for device {device_id}: {reason}")
+
+
+class PeakNotPublishable(ConflictError):
+    """409: a shift-peak conclusion must not be published in the current state.
+
+    Raised when the device is pending rebuild, when current intervals do not
+    fully cover the shift, or when an interval overlapping the shift has
+    undeterminable energy.  Inherits the 409 mapping of ConflictError.
+    """

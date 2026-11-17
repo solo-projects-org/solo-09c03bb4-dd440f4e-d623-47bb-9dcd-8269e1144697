@@ -1,4 +1,5 @@
-"""FastAPI application: meter readings, handovers, intervals, rebuild.
+"""FastAPI application: meter readings, handovers, intervals, rebuild,
+and shift-peak (top 15-minute demand) conclusions.
 
 Swagger UI is served at ``/docs`` (ReDoc at ``/redoc``) and the OpenAPI
 document at ``/openapi.json``.
@@ -14,7 +15,15 @@ from fastapi.responses import JSONResponse
 from .config import Settings
 from .database import ConnectionPool
 from .errors import ConflictError, RebuildFailure
-from .models import AcceptOut, HandoverIn, IntervalOut, ReadingIn, RebuildOut
+from .models import (
+    AcceptOut,
+    HandoverIn,
+    IntervalOut,
+    ReadingIn,
+    RebuildOut,
+    ShiftPeakIn,
+    ShiftPeakOut,
+)
 from . import service
 
 
@@ -36,8 +45,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=(
             "提交按设备区分的累计电表读数与换表交接，按相邻读数生成带来源编号的"
             "区间电量。倒退读数或交接缺失记为无法判定（energy_kwh=null），绝不报零。"
+            "班次峰值接口按设备与 UTC 起止核算最高 15 分钟需量：仅用完整覆盖班次"
+            "且电量可判定的现行区间，区间内耗电按均匀分布，峰窗可跨读数边界；"
+            "读数/交接更正一经受理，旧峰值立即失去当前资格，须重新核算。"
         ),
-        version="1.0.0",
+        version="1.1.0",
         lifespan=lifespan,
     )
 
@@ -150,6 +162,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "SELECT * FROM rebuild_runs ORDER BY id DESC LIMIT 50"
             ).fetchall()
         ]
+
+    @app.post(
+        "/shift-peaks",
+        response_model=ShiftPeakOut,
+        status_code=201,
+        tags=["班次峰值"],
+        summary="提交班次峰值核算（最高 15 分钟需量）",
+    )
+    def post_shift_peak(
+        payload: ShiftPeakIn,
+        conn: sqlite3.Connection = Depends(db),
+    ):
+        """按设备号与 UTC 起止核算并发布班次峰值结论。
+
+        仅用完整覆盖班次且电量可判定的现行区间，区间内耗电按均匀分布，
+        峰窗为任意连续 15 分钟（可跨读数边界）；返回最大平均 kW、最早峰窗
+        及涉及的读数/交接来源。班次不足 15 分钟 → 422；缺段、电量无法判定
+        或设备待重建 → 409，不发布结论。相同设备+班次在结论仍现行时幂等。
+        """
+        return service.compute_shift_peak(conn, payload)
+
+    @app.get(
+        "/shift-peaks",
+        response_model=list[ShiftPeakOut],
+        tags=["班次峰值"],
+        summary="查询已发布的班次峰值结论",
+    )
+    def get_shift_peaks(
+        device_id: str | None = Query(default=None),
+        status: str = Query(default="current", pattern="^(current|stale|all)$"),
+        conn: sqlite3.Connection = Depends(db),
+    ):
+        return service.list_shift_peaks(conn, device_id, status)
 
     app.state.settings = settings
     return app

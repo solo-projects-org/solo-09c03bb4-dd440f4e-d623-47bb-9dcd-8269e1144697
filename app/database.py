@@ -80,6 +80,30 @@ CREATE INDEX IF NOT EXISTS idx_intervals_device_status
     ON intervals(device_id, status);
 CREATE INDEX IF NOT EXISTS idx_intervals_status ON intervals(status);
 
+-- Published shift-peak conclusions (top 15-minute average demand per shift).
+--   status = 'current' : the conclusion reflects the current interval set
+--   status = 'stale'   : a reading/handover correction was accepted afterwards;
+--                        kept for audit, never served as a current conclusion
+-- A stale peak is never resurrected: after a rebuild retry the analyst must
+-- submit a fresh calculation, which inserts a new 'current' row.
+CREATE TABLE IF NOT EXISTS shift_peaks (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id         TEXT    NOT NULL,
+    shift_start       TEXT    NOT NULL,        -- UTC, ISO-8601
+    shift_end         TEXT    NOT NULL,        -- UTC, ISO-8601
+    window_seconds    INTEGER NOT NULL,        -- demand window length (900)
+    max_avg_kw        REAL    NOT NULL,        -- top average kW over the window
+    peak_window_start TEXT    NOT NULL,        -- earliest peak window (UTC)
+    peak_window_end   TEXT    NOT NULL,
+    sources_json      TEXT    NOT NULL,        -- readings/handovers/interval ids
+    input_hash        TEXT    NOT NULL,        -- fingerprint of the interval set
+    status            TEXT    NOT NULL CHECK (status IN ('current','stale')),
+    computed_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    superseded_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_shift_peaks_device_status
+    ON shift_peaks(device_id, status);
+
 -- Rebuild run audit trail.  'failed'/'interrupted' runs never delete stale
 -- rows, and no run is ever started on service boot.
 CREATE TABLE IF NOT EXISTS rebuild_runs (

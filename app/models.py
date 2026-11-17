@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+#: Demand window length for shift peaks: the top 15-minute average load.
+PEAK_WINDOW_SECONDS = 900
 
 
 def utc_now_iso() -> str:
@@ -97,3 +100,69 @@ class RebuildOut(BaseModel):
     rebuilt_devices: list[str]
     failed_devices: dict[str, str]
     detail: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Shift peak (最高 15 分钟需量) models
+# ---------------------------------------------------------------------------
+
+class ShiftPeakIn(BaseModel):
+    device_id: str = Field(min_length=1, description="设备号")
+    shift_start: datetime = Field(description="班次开始（UTC，需带时区）")
+    shift_end: datetime = Field(description="班次结束（UTC，需带时区）")
+
+    @field_validator("device_id")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("must not be blank")
+        return v
+
+    @model_validator(mode="after")
+    def _check_shift(self) -> "ShiftPeakIn":
+        for name in ("shift_start", "shift_end"):
+            if getattr(self, name).tzinfo is None:
+                raise ValueError(f"{name} must include a timezone (use UTC)")
+        if self.shift_end <= self.shift_start:
+            raise ValueError("shift_end must be after shift_start")
+        seconds = (self.shift_end - self.shift_start).total_seconds()
+        if seconds < PEAK_WINDOW_SECONDS:
+            raise ValueError(
+                f"shift shorter than {PEAK_WINDOW_SECONDS // 60} minutes: "
+                "no 15-minute peak window fits"
+            )
+        return self
+
+
+class SourceRef(BaseModel):
+    source_id: str
+    revision: int
+
+
+class ShiftPeakSources(BaseModel):
+    """Provenance of the published peak: every reading / handover source whose
+    interval the peak window touches, plus the interval row ids used."""
+    readings: list[SourceRef]
+    handovers: list[SourceRef]
+    interval_ids: list[int]
+
+
+class ShiftPeakOut(BaseModel):
+    id: int
+    device_id: str
+    shift_start: str
+    shift_end: str
+    window_seconds: int
+    max_avg_kw: float = Field(description="最高 15 分钟窗口的平均功率 kW")
+    peak_window_start: str = Field(description="最早峰窗起点（UTC）")
+    peak_window_end: str = Field(description="最早峰窗终点（UTC）")
+    sources: ShiftPeakSources
+    input_hash: str = Field(description="核算所用现行区间集合的 SHA-256 指纹")
+    status: str = Field(description="current=现行有效结论；stale=已被更正取代")
+    computed_at: str
+    superseded_at: str | None = None
+    idempotent: bool = Field(
+        default=False,
+        description="仅 POST：相同设备+班次且结论仍现行时为幂等重发",
+    )
