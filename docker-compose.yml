@@ -1,0 +1,15 @@
+services:
+  energy-api:
+    build: .
+    container_name: energy-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - energy-data:/data
+    environment:
+      # Set to a device_id to force that device's rebuild to fail (test hook).
+      FAIL_DEVICE: ""
+    restart: unless-stopped
+
+volumes:
+  energy-data:
